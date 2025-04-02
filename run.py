@@ -25,6 +25,11 @@ def run_robot():
         raise FileNotFoundError(f"配置文件不存在: {config_path}")
     else:
         print(f"找到配置文件: {config_path}")
+
+    '''
+    # 运行
+    '''
+
     # sys.argv = [
     #     "freqtrade",
     #     "trade",
@@ -35,27 +40,42 @@ def run_robot():
     '''
     # 回测
     '''
-
+    # config_path = r"//192.168.123.62/share/user_data/callbackconfig.json"
     # sys.argv = [
     #     "freqtrade",
     #     "backtesting",
     #     "--config", config_path,
     #     "--strategy", "SampleStrategy",
-    #     "--timerange", "20190101-20250402",
+    #     "--timerange", "20241201-20250402",
     #     "--export", "trades"
     # ]
 
     '''
-    #数据下载
+    # 启动web服务回测
     '''
+    config_path = r"//192.168.123.62/share/user_data/config.json"
+    userdir = r"//192.168.123.62/share/user_data"
+    datadir = r"//192.168.123.62/share/user_data/data/okx/futures"
     sys.argv = [
         "freqtrade",
-        "download-data",
+        "webserver",
         "--config", config_path,
-        "--timeframes", "1m","5m", "15m", "1h", "4h","1d",
-        "--prepend",
-        "--timerange", "20190101-"
+        "--userdir",userdir,
+        "--datadir",datadir
+        #"-h"
     ]
+
+    # '''
+    # #数据下载
+    # '''
+    # sys.argv = [
+    #     "freqtrade",
+    #     "download-data",
+    #     "--config", config_path,
+    #     "--timeframes", "1m","5m", "15m", "1h", "4h","1d",
+    #     "--prepend",
+    #     "--timerange", "20191227-"
+    # ]
     main()
 
 
