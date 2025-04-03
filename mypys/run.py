@@ -3,6 +3,7 @@
 import sys
 from freqtrade.main import main
 import os
+from datetime import datetime, timedelta
 
 def run_robot():
     os.environ["PYTHONUTF8"] = "1" # 设置环境变量，确保 Python 使用 UTF-8 编码
@@ -25,38 +26,14 @@ def run_robot():
         raise FileNotFoundError(f"配置文件不存在: {config_path}")
     else:
         print(f"找到配置文件: {config_path}")
-    # sys.argv = [
-    #     "freqtrade",
-    #     "trade",
-    #     "--config", config_path,
-    #     "--strategy", "SampleStrategy"
-    # ]
-
-    '''
-    # 回测
-    '''
-
-    # sys.argv = [
-    #     "freqtrade",
-    #     "backtesting",
-    #     "--config", config_path,
-    #     "--strategy", "SampleStrategy",
-    #     "--timerange", "20190101-20250402",
-    #     "--export", "trades"
-    # ]
-
-    '''
-    #数据下载
-    '''
     sys.argv = [
         "freqtrade",
-        "download-data",
+        "trade",
         "--config", config_path,
-        "--timeframes", "1m","5m", "15m", "1h", "4h","1d",
-        "--prepend",
-        "--timerange", "20190101-"
+        "--strategy", "SampleStrategy"
     ]
     main()
+
 
 
 if __name__ == "__main__":
