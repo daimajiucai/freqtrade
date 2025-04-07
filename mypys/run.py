@@ -30,7 +30,7 @@ def run_robot():
         "freqtrade",
         "trade",
         "--config", config_path,
-        "--strategy", "SampleStrategy"
+        "--strategy", "SMCScalp"
     ]
     main()
 

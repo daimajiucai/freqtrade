@@ -29,9 +29,10 @@ def run_backtesting():
     '''
     sys.argv = [
         "freqtrade",
-        "trade",
+        "backtesting",
         "--config", config_path,
-        "--strategy", "SampleStrategy"
+        "--strategy", "SMCScalp",
+        "--timerange", "20250301-20250401",
     ]
 
     main()
