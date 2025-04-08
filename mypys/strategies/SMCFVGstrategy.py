@@ -45,8 +45,8 @@ class SmcFvgStrategy(IStrategy):
     # 订单类型设置
     order_types = {
         'entry': 'limit', # 在 FVG 50% 挂限价单
-        'exit': 'market', # 止盈使用市场价退出（也可以改 limit）
-        'stoploss': 'market', # 止损使用市场价退出（更可靠）
+        'exit': 'limit', # 止盈使用市场价退出（也可以改 limit）
+        'stoploss': 'limit', # 止损使用市场价退出（更可靠）
         'stoploss_on_exchange': False # Freqtrade 处理止损
     }
 
@@ -149,6 +149,9 @@ class SmcFvgStrategy(IStrategy):
                     }
                     pair_fvgs['bullish'].append(new_bull_fvg)
                     logger.debug(f"[{pair}] 检测到新的 Bullish FVG @ {fvg_time} (Index: {fvg_index}) Price: {new_bull_fvg['bottom']:.5f}-{new_bull_fvg['top']:.5f}")
+                    # ---> 添加日志 <---
+                    logger.info(
+                        f"[{pair}] *** DETECTED Bullish FVG *** @ {fvg_time} (Index: {fvg_index}) Price: {new_bull_fvg['bottom']:.5f}-{new_bull_fvg['top']:.5f}")
 
             # 看跌 FVG: K线 i-2 的 low > K线 i 的 high
             bear_fvg_top = candle_i_minus_2['low']
@@ -168,6 +171,9 @@ class SmcFvgStrategy(IStrategy):
                     }
                     pair_fvgs['bearish'].append(new_bear_fvg)
                     logger.debug(f"[{pair}] 检测到新的 Bearish FVG @ {fvg_time} (Index: {fvg_index}) Price: {new_bear_fvg['bottom']:.5f}-{new_bear_fvg['top']:.5f}")
+                    # ---> 添加日志 <---
+                    logger.info(
+                        f"[{pair}] *** DETECTED Bearish FVG *** @ {fvg_time} (Index: {fvg_index}) Price: {new_bear_fvg['bottom']:.5f}-{new_bear_fvg['top']:.5f}")
 
         # --- 3. 计算 Swing High / Swing Low / Premium / Discount ---
         # 使用过去 N 根 K 线来确定结构点
@@ -211,11 +217,13 @@ class SmcFvgStrategy(IStrategy):
         valid_bear_fvg_entry = None
 
         # 寻找多头入场 (看涨 FVG 在 折扣区 Discount)
-        potential_bull_fvgs = [fvg for fvg in pair_fvgs['bullish'] if not fvg['mitigated'] and fvg['top'] < mid_point and fvg['swing_low'] is not None]
+        # debug暂时屏蔽折扣区检查potential_bull_fvgs = [fvg for fvg in pair_fvgs['bullish'] if not fvg['mitigated'] and fvg['top'] < mid_point and fvg['swing_low'] is not None]
+        potential_bull_fvgs = [fvg for fvg in pair_fvgs['bullish'] if not fvg['mitigated']]  # 暂时移除 P/D 检查
         if potential_bull_fvgs:
             # 选择一个 FVG，例如最新的一个，或者最接近当前价格的一个？
             # 这里简单选择最新的一个有效 FVG
             valid_bull_fvg_entry = max(potential_bull_fvgs, key=lambda f: f['index']) # 选择最新的
+            logger.info(f"[{pair}] ---> (DEBUGGING) Found ANY Bullish FVG! <--- Index: {fvg['index']}")  # 添加调试日志
             # 或者选择最接近当前价格下方的 FVG midpoint？
             # current_close = dataframe['close'].iloc[-1]
             # potential_bull_fvgs_below = [f for f in potential_bull_fvgs if f['mid_price'] < current_close]
@@ -223,10 +231,12 @@ class SmcFvgStrategy(IStrategy):
             #    valid_bull_fvg_entry = max(potential_bull_fvgs_below, key=lambda f: f['mid_price']) # 选择下方最近的
 
         # 寻找空头入场 (看跌 FVG 在 溢价区 Premium)
-        potential_bear_fvgs = [fvg for fvg in pair_fvgs['bearish'] if not fvg['mitigated'] and fvg['bottom'] > mid_point and fvg['swing_high'] is not None]
+        # debug暂时屏蔽溢价区检查potential_bear_fvgs = [fvg for fvg in pair_fvgs['bearish'] if not fvg['mitigated'] and fvg['bottom'] > mid_point and fvg['swing_high'] is not None]
+        potential_bear_fvgs = [fvg for fvg in pair_fvgs['bearish'] if not fvg['mitigated']]  # 暂时移除 P/D 检查
         if potential_bear_fvgs:
             # 选择一个 FVG，例如最新的一个
             valid_bear_fvg_entry = max(potential_bear_fvgs, key=lambda f: f['index']) # 选择最新的
+            logger.info(f"[{pair}] ---> (DEBUGGING) Found ANY Bearish FVG! <--- Index: {fvg['index']}")  # 添加调试日志
             # 或者选择最接近当前价格上方的 FVG midpoint？
             # current_close = dataframe['close'].iloc[-1]
             # potential_bear_fvgs_above = [f for f in potential_bear_fvgs if f['mid_price'] > current_close]
@@ -347,6 +357,19 @@ class SmcFvgStrategy(IStrategy):
         #     return trade.open_rate * (1 - stop_pct)
         return None # 更安全的选择是返回 None，依赖框架处理或不设止损
 
+    def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        """
+        必须实现的退出信号填充方法。
+        在这个策略中，主要的退出逻辑（止盈/止损）由 custom_exit 和 custom_stoploss 处理。
+        因此，此方法仅用于满足框架要求，不生成基于指标的退出信号。
+        我们将 exit_long 和 exit_short 设置为 0。
+        """
+        # Freqtrade 要求 exit_long 和 exit_short 列存在（当 use_exit_signal=True 时）
+        # 由于我们使用 custom_exit 和 custom_stoploss，这里不产生信号
+        dataframe['exit_long'] = 0
+        dataframe['exit_short'] = 0
+
+        return dataframe
 
     def custom_exit(self, pair: str, trade: Trade, current_time: datetime, current_rate: float, current_profit: float, **kwargs) -> Optional[Union[str, bool]]:
         """
@@ -384,6 +407,16 @@ class SmcFvgStrategy(IStrategy):
 
         # 如果没有触发自定义止盈，返回 None，让其他退出机制（如 ROI, 止损）处理
         return None
+
+    def custom_stake_amount(self, pair: str, current_time: 'datetime', current_rate: float,
+                            proposed_stake: float, min_stake: float, max_stake: float,
+                            entry_tag: str, **kwargs) -> float:
+        # 获取可用余额（仅未被占用的资金）
+        free_balance = self.wallets.get_free('USDT')
+
+        # 动态计算（例如：可用资金的50%）
+        stake_amount = free_balance * 0.1
+        return stake_amount
 
     # --- (可选) 辅助函数 ---
     # 你可以在这里添加其他辅助函数，例如更复杂的 Swing High/Low 检测逻辑
