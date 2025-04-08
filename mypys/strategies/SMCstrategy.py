@@ -29,6 +29,10 @@ class SMCScalp(IStrategy):
     # n根k线后退出限价单
     ignore_buying_expired_candle_after = 10
 
+    # 止盈止损设置
+    tp1 = 0.0015  # 止盈1.5%
+    stoploss1 = 0.0015  # 止损1.5%
+
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         # SMC基础指标（示例用EMA，需替换实际SMC逻辑）
         dataframe['ema_fast'] = ta.EMA(dataframe, timeperiod=9)
@@ -36,15 +40,16 @@ class SMCScalp(IStrategy):
         return dataframe
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        # 多头入场条件
-        dataframe.loc[
-            (dataframe['ema_fast'] > dataframe['ema_slow']),
-            'enter_long'] = 1
-
-        # 空头入场条件
-        dataframe.loc[
-            (dataframe['ema_fast'] < dataframe['ema_slow']),
-            'enter_short'] = 1
+        # 检测金叉（快速均线上穿慢速均线）
+        dataframe['golden_cross'] = (dataframe['ema_fast'] > dataframe['ema_slow']) & (dataframe['ema_fast'].shift(1) <= dataframe['ema_slow'].shift(1))
+        
+        # 检测死叉（快速均线下穿慢速均线）
+        dataframe['death_cross'] = (dataframe['ema_fast'] < dataframe['ema_slow']) & (dataframe['ema_fast'].shift(1) >= dataframe['ema_slow'].shift(1))
+        
+        # 设置入场信号（仅在交叉发生时触发）
+        dataframe.loc[dataframe['golden_cross'], 'enter_long'] = 1
+        dataframe.loc[dataframe['death_cross'], 'enter_short'] = 1
+        
         return dataframe
 
     # 新增必须的退出趋势方法
@@ -93,35 +98,41 @@ class SMCScalp(IStrategy):
         # 根据退出类型和方向定价
         if trade.is_short:
             if exit_tag == 'short_profit':
-                return trade.open_rate * 0.9985  # 空头止盈价
+                return trade.open_rate * (1-self.tp1)  # 空头止盈价
             elif exit_tag == 'short_stop':
-                return trade.open_rate * 1.0015  # 空头止损价
+                return trade.open_rate * (1+self.tp1)  # 空头止损价
         else:
             if exit_tag == 'long_profit':
-                return trade.open_rate * 1.0015  # 多头止盈
+                return trade.open_rate * (1+self.tp1)  # 多头止盈
             elif exit_tag == 'long_stop':
-                return trade.open_rate * 0.9985  # 多头止损
+                return trade.open_rate * (1-self.tp1)  # 多头止损
         return proposed_rate
 
     def custom_stake_amount(self, pair: str, current_time: 'datetime', current_rate: float,
                             proposed_stake: float, min_stake: float, max_stake: float,
                             entry_tag: str, **kwargs) -> float:
-        dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
-        last_candle = dataframe.iloc[-1].squeeze()
+        # dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
+        # last_candle = dataframe.iloc[-1].squeeze()
 
-        entry_price = self.custom_entry_price(pair, current_time, current_rate, entry_tag)
+        # entry_price = self.custom_entry_price(pair, current_time, current_rate, entry_tag)
 
-        # 根据方向计算止损价
-        if 'short' in entry_tag:
-            stoploss_price = entry_price * 1.0015  # 空头止损在上方
-        else:
-            stoploss_price = entry_price * 0.9985  # 多头止损在下方
+        # # 根据方向计算止损价
+        # if 'short' in entry_tag:
+        #     stoploss_price = entry_price * 1.0015  # 空头止损在上方
+        # else:
+        #     stoploss_price = entry_price * 0.9985  # 多头止损在下方
 
-        risk_per_share = abs(entry_price - stoploss_price)
-        dollar_risk = self.wallets.get_total_stake_amount() * self.risk_per_trade
-        position_size = dollar_risk / risk_per_share
+        # risk_per_share = abs(entry_price - stoploss_price)
+        # dollar_risk = self.wallets.get_total_stake_amount() * self.risk_per_trade
+        # position_size = dollar_risk / risk_per_share
 
-        return max(min(position_size, max_stake), min_stake)
+        # return max(min(position_size, max_stake), min_stake)
+            # 获取可用余额（仅未被占用的资金）
+        free_balance = self.wallets.get_free('USDT')
+        
+        # 动态计算（例如：可用资金的50%）
+        stake_amount = free_balance * 0.1
+        return stake_amount
 
     def leverage(self, pair: str, current_time: 'datetime', current_rate: float,
                  proposed_leverage: float, max_leverage: float, entry_tag: str,

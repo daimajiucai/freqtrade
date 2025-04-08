@@ -20,118 +20,91 @@ class SMC_FVG_Strategy(IStrategy):
     use_exit_signal = True
     ignore_buying_expired_candle_after = 300
 
-    fvg_length = IntParameter(3, 10, default=3, space='buy')
-    median_filter_buffer = DecimalParameter(0.005, 0.03, default=0.01, space='buy')
-    profit_target = DecimalParameter(0.005, 0.03, default=0.01, space='sell')
+    plot_config = {
+        'main_plot': {
+            'close': {'color': 'blue'},
+            # 看涨FVG填充区域
+            'bullish_fvg_high': {
+                'color': 'rgba(0,255,0,0.2)',
+                'type': 'line',
+                'fill_to': 'bullish_fvg_low',
+                'fill_color': 'rgba(0,255,0,0.2)'
+            },
+            # 看跌FVG填充区域
+            'bearish_fvg_low': {
+                'color': 'rgba(255,0,0,0.2)',
+                'type': 'line',
+                'fill_to': 'bearish_fvg_high',
+                'fill_color': 'rgba(255,0,0,0.2)'
+            }
+        }
+    }
 
     def populate_indicators(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
-        dataframe = self.detect_structures(dataframe)
-        # 初始化信号列（防止后续KeyError）
-        dataframe['enter_long'] = 0
-        dataframe['enter_short'] = 0
+        df=dataframe.copy()
 
-        # 修正FVG检测逻辑：使用滚动窗口计算前三根极值
-        # 初始化信号列避免KeyError
-        if 'enter_long' not in dataframe.columns:
-            dataframe['enter_long'] = 0
-        if 'enter_short' not in dataframe.columns:
-            dataframe['enter_short'] = 0
+        # ===== 1. 先创建所有需要的列 =====
+        # 看涨FVG条件
+        bullish_condition = (
+            (df['high'].shift(1) < df['low'].shift(2)) &
+            (df['low'] > df['high'].shift(1))
+        )
+        # 生成列
+        df['bullish_fvg_high'] = np.where(bullish_condition, df['low'].shift(2), np.nan)
+        df['bullish_fvg_low'] = np.where(bullish_condition, df['high'].shift(1), np.nan)
 
-        # 修正FVG检测逻辑：使用滚动窗口计算前三根极值
-        dataframe['bullish_fvg'] = self.detect_bullish_fvg(dataframe)
-        dataframe['bearish_fvg'] = self.detect_bearish_fvg(dataframe)
+        # 看跌FVG条件
+        bearish_condition = (
+            (df['low'].shift(1) > df['high'].shift(2)) &
+            (df['high'] < df['low'].shift(1))
+        )
+        df['bearish_fvg_high'] = np.where(bearish_condition, df['low'].shift(1), np.nan)
+        df['bearish_fvg_low'] = np.where(bearish_condition, df['high'].shift(2), np.nan)
 
-        dataframe = self.calculate_median_level(dataframe)
-        # 修正入场价计算：使用Pandas原生操作
-        dataframe['entry_price'] = np.nan  # 先初始化为空值
+        # ===== 2. 动态填补逻辑 =====
+        for fill_type in ['bullish', 'bearish']:
+            high_col = f'{fill_type}_fvg_high'
+            low_col = f'{fill_type}_fvg_low'
+            # 确保列存在
+            if high_col not in df.columns or low_col not in df.columns:
+                continue  # 跳过未生成的列
+            filled = (
+                (df['high'] >= df[low_col]) & 
+                (df['low'] <= df[high_col])
+            ) if fill_type == 'bullish' else (
+                (df['low'] <= df[low_col]) & 
+                (df['high'] >= df[high_col])
+            )
+            # 向前填充未填补的区域
+            df[high_col] = df[high_col].where(~filled.ffill().astype(bool)).ffill()
+            df[low_col] = df[low_col].where(~filled.ffill().astype(bool)).ffill()
+        
+        # 3. 仅打印有数值的行
+        if 'bullish_fvg_high' in df.columns and 'bullish_fvg_low' in df.columns:
+            # 过滤非空值
+            non_empty = df[['date', 'close', 'bullish_fvg_high', 'bullish_fvg_low']].dropna(
+                subset=['bullish_fvg_high', 'bullish_fvg_low'],
+                how='any'
+            )
+            if not non_empty.empty:
+                print("非空的 bullish_fvg 行:")
+                print(non_empty.tail(20))  # 打印最近20条非空记录
+            else:
+                print("警告：未找到任何非空的 bullish_fvg 行")
+        else:
+            print("错误：bullish_fvg 列未生成")
 
-        dataframe = self.detect_structures(dataframe)
-        dataframe['bullish_fvg'] = self.detect_bullish_fvg(dataframe)
-        dataframe['bearish_fvg'] = self.detect_bearish_fvg(dataframe)
-        dataframe = self.calculate_median_level(dataframe)
-        # 仅当信号发生时记录入场价格
-        entry_condition = (dataframe['enter_long'] == 1) | (dataframe['enter_short'] == 1)
-        dataframe.loc[entry_condition, 'entry_price'] = dataframe['open'].shift(-1)
-
-        # 前向填充有效入场价
-        dataframe['entry_price'] = dataframe['entry_price'].ffill()
-
-        return dataframe
-
-    def detect_structures(self, df: pd.DataFrame) -> pd.DataFrame:
-        window = self.fvg_length.value * 2
-        df['structure_high'] = df['high'].rolling(window, center=True).max().shift(1)
-        df['structure_low'] = df['low'].rolling(window, center=True).min().shift(1)
-        return df
-
-    def detect_bullish_fvg(self, df: pd.DataFrame) -> pd.Series:
-        # 修正：前三根最高价小于当前最低价
-        max_high = df['high'].rolling(3).max().shift(1)
-        return (max_high < df['low']).astype(int)
-
-    def detect_bearish_fvg(self, df: pd.DataFrame) -> pd.Series:
-        # 修正：前三根最低价大于当前最高价
-        min_low = df['low'].rolling(3).min().shift(1)
-        return (min_low > df['high']).astype(int)
-
-    def calculate_median_level(self, df: pd.DataFrame) -> pd.DataFrame:
-        df['median_level'] = (df['structure_high'] + df['structure_low']) / 2
         return df
 
     def populate_exit_trend(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
-        # 统一止盈逻辑（移除重复方法）
-        dataframe['exit_long'] = 0
-        dataframe['exit_short'] = 0
-
-        # 多头止盈
-        dataframe.loc[
-            dataframe['close'] >= dataframe['entry_price'] * (1 + self.profit_target.value),
-            'exit_long'
-        ] = 1
-
-        # 空头止盈
-        dataframe.loc[
-            dataframe['close'] <= dataframe['entry_price'] * (1 - self.profit_target.value),
-            'exit_short'
-        ] = 1
 
         return dataframe
-
-    def custom_price(self, dataframe: pd.DataFrame) -> pd.Series:
-        return dataframe['open'].shift(-1)
-
-    def custom_stoploss(self, pair: str, trade: 'Trade', current_time: datetime,
-                        current_rate: float, current_profit: float,  ** kwargs) -> float:
-        dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
-        last_candle = dataframe.iloc[-1]
-
-        if trade.is_short:
-            return (last_candle['structure_high'] - current_rate) / current_rate
-        else:
-            return (current_rate - last_candle['structure_low']) / current_rate
 
     def leverage(self, pair: str, current_time: datetime, current_rate: float,
                  proposed_leverage: float, max_leverage: float, entry_tag: str,
                  side: str,  ** kwargs) -> float:
-        return 3.0
+        return 1.0
 
     def populate_entry_trend(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
-        # 先执行父类方法初始化列
-        super().populate_entry_trend(dataframe, metadata)
-
-        # 定义入场条件（示例逻辑，需根据策略需求调整）
-        bullish_condition = (
-                (dataframe['bullish_fvg'] == 1) &
-                (dataframe['close'] > dataframe['median_level'] * (1 + self.median_filter_buffer.value))
-        )
-
-        bearish_condition = (
-                (dataframe['bearish_fvg'] == 1) &
-                (dataframe['close'] < dataframe['median_level'] * (1 - self.median_filter_buffer.value))
-        )
-
-        # 设置信号
-        dataframe.loc[bullish_condition, 'enter_long'] = 1
-        dataframe.loc[bearish_condition, 'enter_short'] = 1
 
         return dataframe

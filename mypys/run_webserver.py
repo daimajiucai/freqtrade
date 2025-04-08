@@ -16,7 +16,7 @@ def run_robot():
     
     # 配置路径（根据系统选择）  
     # Windows UNC 路径示例
-    config_path = r"//192.168.123.62/share/user_data/callbackconfig.json"
+    config_path = r"//192.168.123.62/share/user_data/config.json"
     # Linux/macOS 路径示例ewewe
     # config_path = "/mnt/知识中心/user_data/config.json"
     # 模拟命令行参数
