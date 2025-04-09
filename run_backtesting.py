@@ -31,7 +31,7 @@ def run_backtesting():
         "freqtrade",
         "backtesting",
         "--config", config_path,
-        "--strategy", "SmcFvgStrategy",
+        "--strategy", "SmcFvgStrategy0409",
         "--timerange", "20250301-20250401",
     ]
 
