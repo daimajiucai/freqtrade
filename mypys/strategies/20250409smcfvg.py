@@ -23,6 +23,7 @@ class SmcFvgStrategy0409(IStrategy):
     5. 当有效的15m FVG出现，准备入场。
     6. 在1m timeframe上寻找精确入场点（此处简化为触碰15m FVG边界，待细化）。
     7. 设置固定比例止盈和基于前期高/低点的止损。
+    8. **优化：一个15m FVG只触发一次挂单/入场信号。**
     """
 
     # --- 策略核心参数 ---
@@ -30,18 +31,18 @@ class SmcFvgStrategy0409(IStrategy):
 
     # ROI Tabe (止盈设置) - 0分钟后止盈0.5%
     minimal_roi = {
-        "0": 0.005  # 0.5%
+        "0": 0.01  # 0.5%
     }
 
     # Stoploss (止损设置) - 使用自定义止损 `custom_stoploss`
-    stoploss = -0.04 # 设置一个较大的值，因为我们将使用custom_stoploss
+    stoploss = -0.99 # 设置一个较大的值，因为我们将使用custom_stoploss
 
     # Trailing Stop (追踪止损) - 暂时不使用
     trailing_stop = False
     # trailing_stop_positive = 0.001
     # trailing_stop_positive_offset = 0.002
     # trailing_only_offset_is_reached = True
-
+    use_custom_stoploss = True # <--- 显式确保启用自定义止损
     # Timeframe (时间框架)
     timeframe = '1m'  # 交易和入场确认时间框架
     informative_timeframe = '15m' # 信号产生时间框架
@@ -102,16 +103,16 @@ class SmcFvgStrategy0409(IStrategy):
         # --- 2. 在 15m 数据上计算 FVG 和 Swing High/Low ---
         try:  # 使用 try...except 包裹，以便看到 calculate_fvg 内部的错误
             informative_df = self.calculate_fvg(informative_df.copy(),
-                                                prefix='inf_15m')  # 使用 .copy() 避免 SettingWithCopyWarning
+                                                prefix=f'inf_{self.informative_timeframe}')  # 使用 .copy() 避免 SettingWithCopyWarning
             # 添加打印：检查 calculate_fvg 是否添加了列
             print(
                 f"Columns in informative_df after calculate_fvg for {metadata['pair']}: {informative_df.columns.tolist()}")
-            if 'inf_15m_bull_fvg_detected' not in informative_df.columns:
+            if f'inf_{self.informative_timeframe}_bull_fvg_detected' not in informative_df.columns:
                 print(
                     f"ERROR: 'inf_15m_bull_fvg_detected' column MISSING in informative_df after calculate_fvg for {metadata['pair']}!")
 
             informative_df = self.calculate_swing_high_low(informative_df.copy(), lookback=self.swing_lookback.value,
-                                                           prefix='inf_15m')
+                                                           prefix=f'inf_{self.informative_timeframe}')
             # 添加打印：检查 calculate_swing_high_low 是否添加了列
             print(
                 f"Columns in informative_df after calculate_swing_high_low for {metadata['pair']}: {informative_df.columns.tolist()}")
@@ -130,7 +131,7 @@ class SmcFvgStrategy0409(IStrategy):
             dataframe = merge_informative_pair(dataframe, informative_df, self.timeframe, self.informative_timeframe, ffill=True)
             # 添加打印：检查合并后主 dataframe 的列
             print(f"合并后的列 {metadata['pair']}: {dataframe.columns.tolist()}")
-            if 'inf_15m_bull_fvg_detected_15m' not in dataframe.columns:
+            if f'inf_{self.informative_timeframe}_bull_fvg_detected_{self.informative_timeframe}' not in dataframe.columns:
                 print(f"ERROR: 'inf_15m_bull_fvg_detected' column MISSING in main dataframe AFTER merge for {metadata['pair']}!")
 
         except Exception as e:
@@ -143,36 +144,32 @@ class SmcFvgStrategy0409(IStrategy):
         # dataframe = self.calculate_fvg(dataframe, prefix='tf_1m')
         # dataframe = self.calculate_swing_high_low(dataframe, lookback=self.swing_lookback.value, prefix='tf_1m') # 如果需要1m的swing点
         # --- 检查点：在尝试访问之前，再次确认列是否存在 ---
-        if 'inf_15m_bull_fvg_detected_15m' not in dataframe.columns:
-            print(f"FATAL: 'inf_15m_bull_fvg_detected' is STILL missing before access for {metadata['pair']} at {dataframe['date'].iloc[-1]}. Returning original dataframe.")
-            # 可以选择填充默认值或直接返回，避免 KeyErorr
-            # dataframe['inf_15m_bull_fvg_detected'] = False # 填充默认值示例
-            # dataframe['inf_15m_fvg_bull_top'] = np.nan
-            # dataframe['inf_15m_swing_midpoint'] = np.nan
-            # return dataframe # 或者直接返回
-            # 目前选择直接返回，因为缺少关键列无法继续计算
-            return dataframe
-        if 'inf_15m_fvg_bull_top_15m' not in dataframe.columns:
-             print(f"FATAL: 'inf_15m_fvg_bull_top_15m' is missing...")
-             return dataframe
-        if 'inf_15m_swing_midpoint_15m' not in dataframe.columns:
-             print(f"FATAL: 'inf_15m_swing_midpoint_15m' is missing...")
-             return dataframe
-        if 'inf_15m_bear_fvg_detected_15m' not in dataframe.columns: # 检查看跌FVG的列
-            print(f"FATAL: 'inf_15m_bear_fvg_detected_15m' is missing...")
-            return dataframe
-        if 'inf_15m_fvg_bear_bottom_15m' not in dataframe.columns:
-            print(f"FATAL: 'inf_15m_fvg_bear_bottom_15m' is missing...")
+        # --- 5. 检查关键列是否存在 ---
+        required_columns = [
+            f'inf_{self.informative_timeframe}_bull_fvg_detected_{self.informative_timeframe}',
+            f'inf_{self.informative_timeframe}_fvg_bull_top_{self.informative_timeframe}',
+            f'inf_{self.informative_timeframe}_fvg_bull_bottom_{self.informative_timeframe}', # Added for completeness
+            f'inf_{self.informative_timeframe}_bear_fvg_detected_{self.informative_timeframe}',
+            f'inf_{self.informative_timeframe}_fvg_bear_top_{self.informative_timeframe}',   # Added for completeness
+            f'inf_{self.informative_timeframe}_fvg_bear_bottom_{self.informative_timeframe}',
+            f'inf_{self.informative_timeframe}_swing_high_{self.informative_timeframe}',   # Needed for stoploss
+            f'inf_{self.informative_timeframe}_swing_low_{self.informative_timeframe}',    # Needed for stoploss
+            f'inf_{self.informative_timeframe}_swing_midpoint_{self.informative_timeframe}',
+            f'inf_{self.informative_timeframe}_fvg_candle_time_{self.informative_timeframe}' # 新增：FVG形成时间戳
+        ]
+        missing_cols = [col for col in required_columns if col not in dataframe.columns]
+        if missing_cols:
+            print(f"FATAL: Missing required columns after merge for {metadata['pair']} at {dataframe['date'].iloc[-1]}: {missing_cols}. Returning original dataframe.")
             return dataframe
 
         # --- 5. 判断 15m FVG 的有效性 (折扣区/溢价区) ---
-        dataframe['inf_15m_bull_fvg_valid_15m'] = (
-            (dataframe['inf_15m_bull_fvg_detected_15m']) &
-            (dataframe['inf_15m_fvg_bull_top_15m'] < dataframe['inf_15m_swing_midpoint_15m']) # FVG顶部低于50%
+        dataframe[f'inf_{self.informative_timeframe}_bull_fvg_valid_{self.informative_timeframe}'] = (
+            (dataframe[f'inf_{self.informative_timeframe}_bull_fvg_detected_{self.informative_timeframe}']) &
+            (dataframe[f'inf_{self.informative_timeframe}_fvg_bull_top_{self.informative_timeframe}'] < dataframe[f'inf_{self.informative_timeframe}_swing_midpoint_{self.informative_timeframe}']) # FVG顶部低于50%
         )
-        dataframe['inf_15m_bear_fvg_valid_15m'] = (
-            (dataframe['inf_15m_bear_fvg_detected_15m']) &
-            (dataframe['inf_15m_fvg_bear_bottom_15m'] > dataframe['inf_15m_swing_midpoint_15m']) # FVG底部高于50%
+        dataframe[f'inf_{self.informative_timeframe}_bear_fvg_valid_{self.informative_timeframe}'] = (
+            (dataframe[f'inf_{self.informative_timeframe}_bear_fvg_detected_{self.informative_timeframe}']) &
+            (dataframe[f'inf_{self.informative_timeframe}_fvg_bear_bottom_{self.informative_timeframe}'] > dataframe[f'inf_{self.informative_timeframe}_swing_midpoint_{self.informative_timeframe}']) # FVG底部高于50%
         )
 
         # --- 待实现: FVG 存储和失效逻辑 ---
@@ -227,6 +224,16 @@ class SmcFvgStrategy0409(IStrategy):
         df[f'{prefix}_fvg_bear_bottom'] = df[f'{prefix}_high_i']
         # 将非FVG行的区域设为NaN
         df.loc[~df[f'{prefix}_bear_fvg_detected'], [f'{prefix}_fvg_bear_top', f'{prefix}_fvg_bear_bottom']] = np.nan
+
+        # 我们将时间戳记录在 FVG 被 *确认* 的那根 K 线 (candle i) 上
+        df[f'{prefix}_fvg_candle_time'] = pd.NaT # 初始化为 Not-a-Time
+        # 仅在 FVG *首次* 被检测到的那根K线上记录时间戳 (避免在连续FVG中重复记录)
+        # is_new_bull_fvg = df[f'{prefix}_bull_fvg_detected'] & ~df[f'{prefix}_bull_fvg_detected'].shift(1).fillna(False)
+        # is_new_bear_fvg = df[f'{prefix}_bear_fvg_detected'] & ~df[f'{prefix}_bear_fvg_detected'].shift(1).fillna(False)
+        # df.loc[is_new_bull_fvg | is_new_bear_fvg, f'{prefix}_fvg_candle_time'] = df['date']
+        # 简化逻辑：只要当前K线检测到FVG，就记录当前K线时间。merge_informative_pair的ffill会处理后续。
+        # 这意味着同一个15m FVG，其关联的 `fvg_candle_time` 会是形成它的那根15m K线的时间。
+        df.loc[df[f'{prefix}_bull_fvg_detected'] | df[f'{prefix}_bear_fvg_detected'], f'{prefix}_fvg_candle_time'] = df['date']
 
         # 清理辅助列 (可选)
         # df.drop(columns=[f'{prefix}_high_i_minus_2', f'{prefix}_low_i_minus_2', f'{prefix}_high_i', f'{prefix}_low_i'], inplace=True)
@@ -283,30 +290,96 @@ class SmcFvgStrategy0409(IStrategy):
         # 2. 当前 1m K线的最低价触碰或进入了该 15m FVG 的上边界 (low <= inf_15m_fvg_bull_top)
         #    注意：这里简化了入场逻辑，实际可能需要更精细的1m确认
         # 3. (可选) 增加其他过滤条件，例如波动性、成交量等
-        dataframe.loc[
-            (
-                (dataframe['inf_15m_bull_fvg_valid_15m'] == True) &
-                (dataframe['low'] <= dataframe['inf_15m_fvg_bull_top_15m']) & # 价格触及或进入15m FVG上沿
-                # (dataframe['low'] >= dataframe['inf_15m_fvg_bull_bottom']) & # (可选) 价格仍在FVG内部
-                 (dataframe['volume'] > 0) # 基础的成交量过滤
-            ),
-            ['enter_long', 'enter_tag']] = (1, f'15m_bull_fvg_entry') # 设置信号和标签
+        # dataframe.loc[
+        #     (
+        #         (dataframe[f'inf_{self.informative_timeframe}_bull_fvg_valid_{self.informative_timeframe}'] == True) &
+        #         (dataframe['low'] <= dataframe[f'inf_{self.informative_timeframe}_fvg_bull_top_{self.informative_timeframe}']) & # 价格触及或进入15m FVG上沿
+        #         # (dataframe['low'] >= dataframe['inf_15m_fvg_bull_bottom']) & # (可选) 价格仍在FVG内部
+        #          (dataframe['volume'] > 0) # 基础的成交量过滤
+        #     ),
+        #     ['enter_long', 'enter_tag']] = (1, f'{self.informative_timeframe}_bull_fvg_entry') # 设置信号和标签
 
-        # 做空条件 (Short Entry):
-        # 1. 检测到有效的 15m 看跌 FVG (inf_15m_bear_fvg_valid == True)
-        # 2. 当前 1m K线的最高价触碰或进入了该 15m FVG 的下边界 (high >= inf_15m_fvg_bear_bottom)
-        # 3. (可选) 增加其他过滤条件
-        dataframe.loc[
-            (
-                (dataframe['inf_15m_bear_fvg_valid_15m'] == True) &
-                (dataframe['high'] >= dataframe['inf_15m_fvg_bear_bottom_15m']) & # 价格触及或进入15m FVG下沿
-                # (dataframe['high'] <= dataframe['inf_15m_fvg_bear_top']) & # (可选) 价格仍在FVG内部
-                (dataframe['volume'] > 0) # 基础的成交量过滤
-            ),
-            ['enter_short', 'enter_tag']] = (1, f'15m_bear_fvg_entry') # 设置信号和标签
+        # # 做空条件 (Short Entry):
+        # # 1. 检测到有效的 15m 看跌 FVG (inf_15m_bear_fvg_valid == True)
+        # # 2. 当前 1m K线的最高价触碰或进入了该 15m FVG 的下边界 (high >= inf_15m_fvg_bear_bottom)
+        # # 3. (可选) 增加其他过滤条件
+        # dataframe.loc[
+        #     (
+        #         (dataframe[f'inf_{self.informative_timeframe}_bear_fvg_valid_{self.informative_timeframe}'] == True) &
+        #         (dataframe['high'] >= dataframe[f'inf_{self.informative_timeframe}_fvg_bear_bottom_{self.informative_timeframe}']) & # 价格触及或进入15m FVG下沿
+        #         # (dataframe['high'] <= dataframe['inf_15m_fvg_bear_top']) & # (可选) 价格仍在FVG内部
+        #         (dataframe['volume'] > 0) # 基础的成交量过滤
+        #     ),
+        #     ['enter_short', 'enter_tag']] = (1, f'{self.informative_timeframe}_bear_fvg_entry') # 设置信号和标签
 
-        # --- 待实现: 防止在失效FVG处入场 ---
-        # TODO: 确保入场信号不会在已经被标记为失效的FVG上触发
+        # # --- 待实现: 防止在失效FVG处入场 ---
+        # # TODO: 确保入场信号不会在已经被标记为失效的FVG上触发
+        # --- 先初始化输出列 ---
+        dataframe['enter_long'] = 0
+        dataframe['enter_short'] = 0
+        dataframe['enter_tag'] = None
+
+        # --- 获取必要的列名 ---
+        inf_timeframe = self.informative_timeframe
+        bull_fvg_valid_col = f'inf_{inf_timeframe}_bull_fvg_valid_{inf_timeframe}'
+        bull_fvg_top_col = f'inf_{inf_timeframe}_fvg_bull_top_{inf_timeframe}'
+        bear_fvg_valid_col = f'inf_{inf_timeframe}_bear_fvg_valid_{inf_timeframe}'
+        bear_fvg_bottom_col = f'inf_{inf_timeframe}_fvg_bear_bottom_{inf_timeframe}'
+        fvg_time_col = f'inf_{inf_timeframe}_fvg_candle_time_{inf_timeframe}' # FVG形成的时间戳列
+
+        # 检查时间戳列是否存在
+        if fvg_time_col not in dataframe.columns:
+            print(f"Warning: FVG timestamp column '{fvg_time_col}' not found for {metadata['pair']}. Skipping entry signal generation.")
+            return dataframe
+
+        # --- 1. 计算原始触发条件 (Raw Trigger) ---
+        # 做多原始触发: 有效15m看涨FVG + 1m low触碰FVG上边界
+        dataframe['raw_trigger_long'] = (
+            (dataframe[bull_fvg_valid_col] == True) &
+            (dataframe['low'] <= dataframe[bull_fvg_top_col]) &
+            # (dataframe['low'] >= dataframe[f'inf_{inf_timeframe}_fvg_bull_bottom_{inf_timeframe}']) & # Optional: price inside FVG
+            (dataframe['volume'] > 0)
+        ).astype(int) # 转为 0 或 1
+
+        # 做空原始触发: 有效15m看跌FVG + 1m high触碰FVG下边界
+        dataframe['raw_trigger_short'] = (
+            (dataframe[bear_fvg_valid_col] == True) &
+            (dataframe['high'] >= dataframe[bear_fvg_bottom_col]) &
+            # (dataframe['high'] <= dataframe[f'inf_{inf_timeframe}_fvg_bear_top_{inf_timeframe}']) & # Optional: price inside FVG
+            (dataframe['volume'] > 0)
+        ).astype(int) # 转为 0 或 1
+
+        # --- 2. 过滤重复信号：每个15m FVG只触发一次 ---
+        # 我们使用 FVG 形成的时间戳 (fvg_time_col) 来唯一标识一个 FVG 事件。
+        # 对每个 FVG 时间戳分组，计算原始触发信号的累积和 (cumsum)。
+        # 只有 cumsum == 1 的那根 1m K 线才是有效的第一次触发。
+
+        # 按 FVG 时间戳分组计算累积触发次数 (需要处理 NaN 时间戳，代表没有活跃 FVG)
+        # fillna(pd.NaT) 可能不足以让groupby工作，用一个不可能的时间或特殊值代替?
+        # 或者只在有效时间戳上计算 groupby
+        dataframe['fvg_entry_count_long'] = dataframe.loc[dataframe[fvg_time_col].notna()].groupby(fvg_time_col)['raw_trigger_long'].cumsum()
+        dataframe['fvg_entry_count_short'] = dataframe.loc[dataframe[fvg_time_col].notna()].groupby(fvg_time_col)['raw_trigger_short'].cumsum()
+
+        # 将计算结果填回整个 dataframe (NaNs in count columns where timestamp was NaN)
+        # The groupby result index aligns with the original index where timestamp was notna.
+
+        # --- 3. 生成最终入场信号 ---
+        # 做多条件: 原始触发为1 且 是该FVG的第一次触发 (cumsum == 1)
+        dataframe.loc[
+            (dataframe['raw_trigger_long'] == 1) &
+            (dataframe['fvg_entry_count_long'] == 1),
+            ['enter_long', 'enter_tag']
+        ] = (1, f'{inf_timeframe}_bull_fvg_entry')
+
+        # 做空条件: 原始触发为1 且 是该FVG的第一次触发 (cumsum == 1)
+        dataframe.loc[
+            (dataframe['raw_trigger_short'] == 1) &
+            (dataframe['fvg_entry_count_short'] == 1),
+            ['enter_short', 'enter_tag']
+        ] = (1, f'{inf_timeframe}_bear_fvg_entry')
+
+        # --- 清理辅助列 (可选) ---
+        # dataframe.drop(columns=['raw_trigger_long', 'raw_trigger_short', 'fvg_entry_count_long', 'fvg_entry_count_short'], inplace=True, errors='ignore')
 
         return dataframe
 
@@ -327,69 +400,141 @@ class SmcFvgStrategy0409(IStrategy):
         # dataframe.loc[:, ['exit_long', 'exit_short']] = (0, 0) # 明确置零
         return dataframe
 
-    # --- 自定义止损 ---
     def custom_stoploss(self, pair: str, trade: 'Trade', current_time: datetime,
                         current_rate: float, current_profit: float, **kwargs) -> float:
         """
-        自定义止损逻辑，基于入场时的前期高/低点
+        自定义止损逻辑，基于入场时的前期高/低点，并包含详细的调试日志。
 
         Args:
             pair (str): 交易对
             trade (Trade): Freqtrade 的 Trade 对象
-            current_time (datetime): 当前时间
+            current_time (datetime): 当前时间 (通常是 UTC)
             current_rate (float): 当前价格
             current_profit (float): 当前利润率
             **kwargs: 其他可能需要的参数
 
         Returns:
-            float: 需要设置的绝对止损价格. 返回 -1 表示使用配置文件中的默认止损
+            float: 需要设置的绝对止损价格。 返回 -1.0 表示使用配置文件中的默认止损。
         """
-        # 获取入场时的DataFrame行信息 (注意数据可能变化，需要谨慎处理)
+        # --- 日志: 函数开始 ---
+        # print(f"【止损调试 {trade.id}】: 时间={current_time}, 交易对={pair}, 当前价格={current_rate}, 当前利润={current_profit:.2%}")
+        return -0.01 # 返回一个小的负数，表示使用自定义止损价
+        # --- 1. 获取分析后的数据 ---
         dataframe, _ = self.dp.get_analyzed_dataframe(pair=pair, timeframe=self.timeframe)
-        # 找到与交易开仓时间最接近的K线索引 (需要开仓时间是UTC)
-        # trade.open_date 是 aware datetime object (UTC)
-        entry_candle = dataframe.loc[dataframe['date'] < trade.open_date]
+        if dataframe.empty:
+            print(f"【止损调试 {trade.id}】: 错误 - 无法获取分析数据框(dataframe)。返回-1。")
+            return -1.0
+
+        # --- 2. 处理开仓时间 (确保是 UTC) ---
+        # Freqtrade 通常内部处理好时区，但以防万一做个检查和转换
+        if trade.open_date.tzinfo is None:
+             open_date_utc = trade.open_date.replace(tzinfo=timezone.utc)
+             print(f"【止损调试 {trade.id}】: 警告 - 交易开仓时间无时区，已强制转换为UTC: {open_date_utc}")
+        else:
+             # 确保转换为 UTC 标准时区进行比较
+             open_date_utc = trade.open_date.astimezone(timezone.utc)
+        # print(f"【止损调试 {trade.id}】: 交易开仓时间 (UTC): {open_date_utc}")
+
+        # --- 3. 查找入场 K 线 ---
+        # 找到严格在开仓时间之前的最后一根 K 线
+        # 注意：如果开仓发生在K线的早期，这可能会选到前一根K线的数据，这通常是期望的行为（基于已完成K线计算指标）
+        entry_candle = dataframe.loc[dataframe['date'] < open_date_utc]
         if entry_candle.empty:
-            # print(f"Warning: Could not find entry candle for trade {trade.id} opened at {trade.open_date}")
-            return -1 # 无法确定入场K线，使用默认止损
+            print(f"【止损调试 {trade.id}】: 错误 - 在 {open_date_utc} 之前找不到入场K线。数据可能不足或时间戳有问题。返回-1。")
+            return -1.0 # 无法确定入场K线，使用默认止损
 
+        # 获取入场前的最后一行数据
         entry_candle_row = entry_candle.iloc[-1]
+        # print(f"【止损调试 {trade.id}】: 找到入场参考K线: 时间={entry_candle_row['date']}, 收盘价={entry_candle_row['close']}")
 
-        # 获取入场时使用的 15m Swing High/Low (需要确保这些列存在)
-        # 注意：这里的 swing high/low 是基于 entry_candle 之前的数据计算的
-        stop_price = -1 # 默认值
+        # --- 4. 计算潜在止损价格 ---
+        potential_stop_price = -1.0 # 初始化潜在止损价
+        stop_col_name = "" # 用于日志记录的列名
+        inf_tf = self.informative_timeframe # 简化后续使用
 
         if trade.is_short:
-            # 做空止损: 入场时的前期高点 (inf_15m_swing_high)
-            swing_high_col = 'inf_15m_swing_high_15m'
-            if swing_high_col in entry_candle_row.index and not pd.isna(entry_candle_row[swing_high_col]):
-                stop_price = entry_candle_row[swing_high_col]
-                # print(f"Trade {trade.id} (Short): Setting stoploss to Swing High {stop_price} based on candle at {entry_candle_row['date']}")
+            # --- 4.1 做空止损: 基于前期高点 ---
+            stop_col_name = f'inf_{inf_tf}_swing_high_{inf_tf}'
+            # print(f"【止损调试 {trade.id}】: (做空) 尝试获取止损依据列: '{stop_col_name}'")
+            if stop_col_name in entry_candle_row.index:
+                raw_stop_val = entry_candle_row[stop_col_name]
+                # print(f"【止损调试 {trade.id}】: 原始前期高点值: {raw_stop_val}")
+                if not pd.isna(raw_stop_val):
+                    # --- 添加缓冲 (可选但推荐) ---
+                    # 做空止损应略高于前期高点，避免被精确扫描
+                    buffer = trade.open_rate * 0.001 # 例如开仓价的 0.1% 作为缓冲
+                    potential_stop_price = raw_stop_val + buffer
+                    # print(f"【止损调试 {trade.id}】: 添加缓冲 ({buffer:.5f}) 后，潜在止损价: {potential_stop_price}")
+                else:
+                    print(f"【止损调试 {trade.id}】: 错误 - 前期高点值为 NaN。无法设置止损。")
+                    potential_stop_price = -1.0 # 明确标记为无效
             else:
-                # print(f"Warning: Swing high not available for trade {trade.id} at entry candle {entry_candle_row['date']}")
-                pass # stop_price 保持 -1
+                print(f"【止损调试 {trade.id}】: 错误 - 数据框中缺少列 '{stop_col_name}'。无法设置止损。")
+                potential_stop_price = -1.0
         else:
-            # 做多止损: 入场时的前期低点 (inf_15m_swing_low)
-            swing_low_col = 'inf_15m_swing_low_15m'
-            if swing_low_col in entry_candle_row.index and not pd.isna(entry_candle_row[swing_low_col]):
-                stop_price = entry_candle_row[swing_low_col]
-                # print(f"Trade {trade.id} (Long): Setting stoploss to Swing Low {stop_price} based on candle at {entry_candle_row['date']}")
+            # --- 4.2 做多止损: 基于前期低点 ---
+            stop_col_name = f'inf_{inf_tf}_swing_low_{inf_tf}'
+            # print(f"【止损调试 {trade.id}】: (做多) 尝试获取止损依据列: '{stop_col_name}'")
+            if stop_col_name in entry_candle_row.index:
+                raw_stop_val = entry_candle_row[stop_col_name]
+                # print(f"【止损调试 {trade.id}】: 原始前期低点值: {raw_stop_val}")
+                if not pd.isna(raw_stop_val):
+                    # --- 添加缓冲 (可选但推荐) ---
+                    # 做多止损应略低于前期低点
+                    buffer = trade.open_rate * 0.001 # 例如开仓价的 0.1% 作为缓冲
+                    potential_stop_price = raw_stop_val - buffer
+                    # print(f"【止损调试 {trade.id}】: 添加缓冲 ({buffer:.5f}) 后，潜在止损价: {potential_stop_price}")
+                    # 检查缓冲后是否变为负数或零
+                    if potential_stop_price <= 0:
+                         print(f"【止损调试 {trade.id}】: 警告 - 缓冲后止损价 <= 0 ({potential_stop_price})。视为无效。")
+                         potential_stop_price = -1.0
+                else:
+                    print(f"【止损调试 {trade.id}】: 错误 - 前期低点值为 NaN。无法设置止损。")
+                    potential_stop_price = -1.0
             else:
-                # print(f"Warning: Swing low not available for trade {trade.id} at entry candle {entry_candle_row['date']}")
-                pass # stop_price 保持 -1
+                print(f"【止损调试 {trade.id}】: 错误 - 数据框中缺少列 '{stop_col_name}'。无法设置止损。")
+                potential_stop_price = -1.0
 
-        # 确保止损价格不是无效值 (e.g., 0 or NaN) 且与当前价格有一定距离以避免立即触发
-        if stop_price > 0 and stop_price != current_rate:
-             # 对于多单，止损价必须低于当前价；对于空单，止损价必须高于当前价
-            if (not trade.is_short and stop_price < current_rate) or \
-               (trade.is_short and stop_price > current_rate):
-                return stop_price
-            else:
-                # print(f"Warning: Calculated stop price {stop_price} is invalid relative to current rate {current_rate} for trade {trade.id}. Using default stoploss.")
-                return -1 # 返回-1使用默认止损
+        # --- 5. 验证计算出的止损价 ---
+        # print(f"【止损调试 {trade.id}】: 最终计算的潜在止损价: {potential_stop_price}")
+
+        # 检查1: 止损价是否有效 (大于0)
+        if potential_stop_price <= 0:
+            print(f"【止损调试 {trade.id}】: 验证失败 - 潜在止损价无效 ({potential_stop_price} <= 0)。返回-1。")
+            return -1.0
+
+        # 检查2: 止损价是否与当前价格相同 (避免无效操作或被立即触发)
+        # 使用 qtpylib.crossed_below 或 crossed_above 可能更稳健，但这里用简单比较
+        # if abs(potential_stop_price - current_rate) < trade. FRACTURE? # 需要一个小的容忍度
+        # 简化：如果完全相同，则可能无法设置，先跳过
+        if potential_stop_price == current_rate:
+             print(f"【止损调试 {trade.id}】: 验证警告 - 潜在止损价 ({potential_stop_price}) 等于当前价 ({current_rate})。暂时返回-1，等待价格变化。")
+             return -1.0 # Freqtrade 通常在下一个 tick 会再次调用 custom_stoploss
+
+        # 检查3: 止损价相对于当前价格的位置是否合理
+        stop_loss_valid = False
+        if not trade.is_short: # 做多
+            if potential_stop_price < current_rate:
+                stop_loss_valid = True
+                # print(f"【止损调试 {trade.id}】: (做多) 验证通过 - 止损价 ({potential_stop_price}) < 当前价 ({current_rate})。")
+            #else:
+                # print(f"【止损调试 {trade.id}】: (做多) 验证失败 - 止损价 ({potential_stop_price}) >= 当前价 ({current_rate})。返回-1。")
+        else: # 做空
+            if potential_stop_price > current_rate:
+                stop_loss_valid = True
+                # print(f"【止损调试 {trade.id}】: (做空) 验证通过 - 止损价 ({potential_stop_price}) > 当前价 ({current_rate})。")
+            #else:
+                # print(f"【止损调试 {trade.id}】: (做空) 验证失败 - 止损价 ({potential_stop_price}) <= 当前价 ({current_rate})。返回-1。")
+
+        # --- 6. 返回结果 ---
+        if stop_loss_valid:
+            print(f"【止损调试 {trade.id}】: >>> 成功设置自定义止损价: {potential_stop_price}")
+            return potential_stop_price
+            
         else:
-            # print(f"Warning: Invalid stop price {stop_price} calculated for trade {trade.id}. Using default stoploss.")
-            return -1 # 返回-1使用默认止损
+            # 如果上面的逻辑没错，这里理论上不应该执行到，但作为保险
+            print(f"【止损调试 {trade.id}】: 验证逻辑判断后仍未通过，返回-1。")
+            return -1.0
 
 # --- (可选) 策略优化器设置 ---
 # class SmcFvgStrategy_Optimize(SmcFvgStrategy):
