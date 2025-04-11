@@ -418,7 +418,7 @@ class SmcFvgStrategy0409(IStrategy):
         """
         # --- 日志: 函数开始 ---
         # print(f"【止损调试 {trade.id}】: 时间={current_time}, 交易对={pair}, 当前价格={current_rate}, 当前利润={current_profit:.2%}")
-        return -0.01 # 返回一个小的负数，表示使用自定义止损价
+        # return -0.01 # 返回一个小的负数，表示使用自定义止损价
         # --- 1. 获取分析后的数据 ---
         dataframe, _ = self.dp.get_analyzed_dataframe(pair=pair, timeframe=self.timeframe)
         if dataframe.empty:
