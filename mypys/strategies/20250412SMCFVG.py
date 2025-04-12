@@ -26,7 +26,8 @@ class FVG:
         return (f"FVG(id={self.id}, status={self.status}, "
                 f"top={self.top:.5f}, bottom={self.bottom:.5f})")
 
-    def update_status(self, current_time: datetime, current_price_high: float, current_price_low: float):
+    #暂未使用
+    def update_status(self, current_time: datetime, current_price_high: float, current_price_low: float, current_price_close: float):
         """根据当前K线价格更新FVG状态"""
         self.last_updated = current_time
 
@@ -58,6 +59,8 @@ class FVG:
                  self.status = 'mitigated'
             # 可以添加过期逻辑
 
+
+
 # --- 策略类定义 ---
 class SmcFvgStrategy0412(IStrategy):
     """
@@ -73,8 +76,13 @@ class SmcFvgStrategy0412(IStrategy):
     informative_timeframe = '15m'
 
     # --- Freqtrade 必须的配置 ---
-    minimal_roi = {"0": 100}
-    stoploss = -0.99
+    # ROI Tabe (止盈设置) - 0分钟后止盈0.5%
+    minimal_roi = {
+        "0": 0.005  # 0.5%
+    }
+
+    # Stoploss (止损设置)
+    stoploss = -0.01
     trailing_stop = False
 
     # --- 超参数定义 ---
@@ -104,21 +112,55 @@ class SmcFvgStrategy0412(IStrategy):
         print(f"计算 15m 指标 for {metadata['pair']} @ {dataframe['date'].iloc[-1]}")
         # 在这里计算 15min FVG 或其他指标
         # ... 计算 FVG 逻辑 ...
+        dataframe['is_bull_fvg'] = 0
+        dataframe['is_bear_fvg'] = 0
+        dataframe['is_in_fvg'] = 0
+        dataframe['is_out_fvg'] = 0
+        dataframe['is_pushback_fvg'] = 0
+        dataframe['fvgid'] = 0
+        if dataframe.empty or len(dataframe) < 3:
+             print(f"警告: 15m 数据不足 (需要至少3条)，无法计算 FVG for {metadata['pair']}")
+             # 返回空的或带有 NaN 的列，避免后续错误
+             return dataframe[['date','is_bull_fvg', 'is_bear_fvg', 'is_in_fvg', 'is_out_fvg', 'is_pushback_fvg','fvgid']]
         # --- 1. 计算 15min FVG 并更新 FVG 列表 ---
-        have_new=self.update_fvg_list(dataframe)
-        # FVG 计算结果会自动合并回主时间框架 (1m) 的 DataFrame
-        # Freqtrade 会处理时间对齐和填充 (通常是向前填充 ffill)
+        self.update_fvg_list(dataframe)
+        # --- 2. 获取当前k线与活跃的FVG列表   ---
+        current_15m_candle = dataframe.iloc[-1]
+        getfvg_list=self.get_active_fvgs(current_15m_candle['date'],current_15m_candle['high'],current_15m_candle['low'],current_15m_candle['close'])
         # TODO:判断各种情况，更新标记，然后更新FVG对象状态
-        dataframe['is_bull_fvg'] = ...  # 当前k线是否涉及看涨fvg（与前面形成的fvg的关系）
-        dataframe['is_bear_fvg'] = ...  # 当前k线是否涉及看跌fvg（与前面形成的fvg的关系）
-        #若有关系，无非以下几种
-        dataframe['is_in_fvg'] = ... # 结算价格是否在fvg内部
-        dataframe['is_out_fvg'] = ...# 结算价格是否穿过fvg（实体刺穿）
-        dataframe['is_pushback_fvg'] = ...#结算价格被推回fvg外部（价格反转）
+        if len(getfvg_list) == 0:
+            print(f"警告: 没有活跃的FVG，无法计算指标 for {metadata['pair']}")
+            # 返回空的或带有 NaN 的列，避免后续错误
+            return dataframe[['date', 'is_bull_fvg', 'is_bear_fvg', 'is_in_fvg', 'is_out_fvg', 'is_pushback_fvg', 'fvgid']]
+        # --- 3. 计算指标 ---
+        for fvg in getfvg_list:
+            if fvg.direction == 'bullish':
+                dataframe['is_bull_fvg'] = 1  # 当前k线是否涉及看涨fvg（与前面形成的fvg的关系）
+                if current_15m_candle['close'] < fvg.bottom:
+                    dataframe['is_out_fvg'] = 1  # 当前k线是否穿过fvg（实体刺穿）
+                    self.set_fvg_status(fvg.id, 'expired')
+                if fvg.top > current_15m_candle['close'] > fvg.bottom:
+                    dataframe['is_in_fvg'] = 1  # 当前k线是否在fvg内部
+                if current_15m_candle['close'] > fvg.top:
+                    dataframe['is_pushback_fvg'] = 1  # 当前k线是否被推回fvg外部（价格反转）
+                    self.set_fvg_status(fvg.id, 'expired')
+            elif fvg.direction == 'bearish':
+                dataframe['is_bear_fvg'] = 1  # 当前k线是否涉及看跌fvg（与前面形成的fvg的关系）
+                if current_15m_candle['close'] > fvg.top:
+                    dataframe['is_out_fvg'] = 1  # 当前k线是否穿过fvg（实体刺穿）
+                    self.set_fvg_status(fvg.id, 'expired')
+                if fvg.bottom < current_15m_candle['close'] < fvg.top:
+                    dataframe['is_in_fvg'] = 1  # 当前k线是否在fvg内部
+                if current_15m_candle['close'] < fvg.bottom:
+                    dataframe['is_pushback_fvg'] = 1  # 当前k线是否被推回fvg外部（价格反转）
+                    self.set_fvg_status(fvg.id, 'expired')
+
         #TODO:根据上述判断情况，更新FVG对象状态
 
-
-        return dataframe[['date', 'fvg_15m_bull_top', 'fvg_15m_bull_bottom']] # 只返回需要的列
+        dataframe['fvgid'] = getfvg_list[-1].id#暂时记录最新fvg的id
+        # FVG 计算结果会自动合并回主时间框架 (1m) 的 DataFrame
+        # Freqtrade 会处理时间对齐和填充 (通常是向前填充 ffill)
+        return dataframe[['date', 'is_bull_fvg', 'is_bear_fvg', 'is_in_fvg', 'is_out_fvg', 'is_pushback_fvg','fvgid']] # 只返回需要的列
 
     @property
     def startup_candle_count(self) -> int:
@@ -228,7 +270,30 @@ class SmcFvgStrategy0412(IStrategy):
             print(
                 f"  最近确认 SL ({n},{m}): {last_sl_val:.5f} (在索引 {sl_confirm_idx if sl_confirm_idx is not None else 'N/A'} 确认)")
 
+        dataframe['is_bull_fvg'] = 0
+        dataframe['is_bear_fvg'] = 0
+        dataframe['is_in_fvg'] = 0
+        dataframe['is_out_fvg'] = 0
+        dataframe['is_pushback_fvg'] = 0
+        dataframe['fvgid'] = 0
+        # --- 定义需要初始化的列名列表 ---
+        columns_to_initialize = [
+            'is_bear_fvg',
+            'is_bull_fvg',
+            'is_in_fvg',
+            'is_out_fvg',
+            'is_pushback_fvg',
+            'fvgid'
+            # ... 添加其他需要初始化的列名 ...
+        ]
 
+        # --- 循环检查并初始化每一列 ---
+        initialized_count = 0  # 用于跟踪实际初始化了多少列 (可选)
+        for column_name in columns_to_initialize:
+            if column_name not in dataframe.columns:
+                # 如果列不存在，则创建它并用 np.nan 填充
+                dataframe[column_name] = np.nan
+                initialized_count += 1
 
         return dataframe
 
@@ -293,7 +358,7 @@ class SmcFvgStrategy0412(IStrategy):
         # cutoff_time = df_15m['date'].iloc[-1] - timedelta(days=...) # 例如只保留最近几天的
         # self.fvg_list = [fvg for fvg in self.fvg_list if fvg.formation_time > cutoff_time or fvg.status not in ['mitigated', 'expired']]
 
-
+    # 暂未使用
     def update_all_fvg_statuses(self, current_time: datetime, current_high: float, current_low: float):
         """使用最新的1分钟K线数据更新所有非最终状态FVG的状态"""
         updated_count = 0
@@ -308,6 +373,28 @@ class SmcFvgStrategy0412(IStrategy):
             print(f"  {updated_count} 个 FVG 状态被更新 @ {current_time}")
 
 
+    def get_active_fvgs(self, current_time: datetime, current_price_high: float, current_price_low: float, current_price_close: float) -> list[FVG]:
+        """
+        获取当前处于活动状态的 FVG 列表
+        然后根据价格返回关联的FVG列表
+        """
+        active_fvgs = [fvg for fvg in self.fvg_list if fvg.status == 'active']
+        returngfvg_list = []
+        for fvg in active_fvgs:
+            if fvg.direction == 'bearish':
+                if current_price_high>=fvg.bottom:
+                    returngfvg_list.append(fvg)
+            elif fvg.direction == 'bullish':
+                if current_price_low<=fvg.top:
+                    returngfvg_list.append(fvg)
+        return returngfvg_list
+        # # 更新 FVG 状态
+        # for fvg in active_fvgs:
+        #     fvg.update_status(current_time, current_price_high, current_price_low,current_price_close)
+        # 返回状态更新前的 FVG 列表
+        # return active_fvgs
+
+    # 暂未使用
     def vectorized_mark_dataframe(self, dataframe: DataFrame) -> DataFrame:
         """
         (较优方法) 在 DataFrame 上向量化地标记与当前活跃 FVG 相关的信息。
@@ -356,22 +443,71 @@ class SmcFvgStrategy0412(IStrategy):
 
         return dataframe
 
+    def set_fvg_status(self, fvgid: str, status: str):
+        """设置 FVG 的状态"""
+        for fvg in self.fvg_list:
+            if fvg.id == fvgid:
+                fvg.status = status
+                print(f"FVG {fvgid} 状态更新为 {status}")
+                return
+        print(f"FVG {fvgid} 不存在，无法设置状态")
+
     # --- 交易逻辑 (占位符) ---
-    def populate_buy_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+    def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         n = self.swing_left_n.value
         m = self.swing_right_m.value
-        col_name_last_sh = f'last_sh_{n}_{m}'
-        col_name_last_sl = f'last_sl_{n}_{m}'
+        pair = metadata['pair']
+        # col_name_last_sh = f'last_sh_{n}_{m}' # 在当前逻辑中未使用
+        # col_name_last_sl = f'last_sl_{n}_{m}' # 在当前逻辑中未使用
 
-        # 示例：
-        # dataframe.loc[
-        #     (qtpylib.crossed_above(dataframe['close'], dataframe[col_name_last_sh])) &
-        #     (dataframe['volume'] > 0),
-        #     'buy'] = 1
-        dataframe['buy'] = 0
+        # --- 定义列名 (假设它们来自 15m informative) ---
+        # !! 确认这些列名与你的 populate_informative_15m 函数返回并合并后的名称一致 !!
+        bull_fvg_col = 'is_bull_fvg_15m'
+        bear_fvg_col = 'is_bear_fvg_15m'
+        out_fvg_col = 'is_out_fvg_15m'  # 假设这个也来自 15m
+        pushback_fvg_col = 'is_pushback_fvg_15m'  # 假设这个也来自 15m
+
+        # --- 确保所有需要的列都存在 ---
+        required_cols = [bull_fvg_col, bear_fvg_col, out_fvg_col, pushback_fvg_col]
+        if not all(col in dataframe.columns for col in required_cols):
+            print(
+                f"[{pair}] Missing one or more required FVG columns ({required_cols}) in dataframe. Skipping entry logic.")
+            dataframe['enter_long'] = 0
+            dataframe['enter_short'] = 0
+            return dataframe
+
+        # --- 初始化入场列 (推荐方式) ---
+        dataframe['enter_long'] = 0
+        dataframe['enter_short'] = 0
+
+        # --- 多头入场 (Long Entry) ---
+        # 使用 Pandas 的按位运算符 & (AND) 和 | (OR)
+        # 确保每个比较都有效（例如，处理 NaN，如果需要的话）
+        # 使用 .fillna(0) 可以将 NaN 视为 False (0)
+        enter_long_condition = (
+            # 条件 1: 当前 K 线穿过了 15m 的看跌 FVG
+                ((dataframe[bear_fvg_col].fillna(0) == 1) & (dataframe[out_fvg_col].fillna(0) == 1)) |  # 使用 '|' 代替 'or'
+
+                # 条件 2: 当前 K 线从看涨 FVG 上轨被推回 (突破上轨)
+                ((dataframe[bull_fvg_col].fillna(0) == 1) & (dataframe[pushback_fvg_col].fillna(0) == 1))
+        )
+        dataframe.loc[enter_long_condition, 'enter_long'] = 1
+        # if enter_long_condition.any(): # 检查是否有任何信号生成
+        #     logger.info(f"[{pair}] Long condition met at index {dataframe[enter_long_condition].index}")
+
+        # --- 空头入场 (Short Entry) ---
+        enter_short_condition = (
+            # 条件 1: 当前 K 线穿过了 15m 的看涨 FVG
+                ((dataframe[bull_fvg_col].fillna(0) == 1) & (dataframe[out_fvg_col].fillna(0) == 1)) |  # 使用 '|' 代替 'or'
+
+                # 条件 2: 当前 K 线从看跌 FVG 下轨被推回 (跌破下轨)
+                ((dataframe[bear_fvg_col].fillna(0) == 1) & (dataframe[pushback_fvg_col].fillna(0) == 1))
+        )
+        dataframe.loc[enter_short_condition, 'enter_short'] = 1
+
         return dataframe
 
-    def populate_sell_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+    def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         n = self.swing_left_n.value
         m = self.swing_right_m.value
         col_name_last_sh = f'last_sh_{n}_{m}'
