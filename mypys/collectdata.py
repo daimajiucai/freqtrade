@@ -63,6 +63,52 @@ def run_collect():
         except Exception as e:
             print(f"下载失败: {str(e)}")
 
+def update_latest_data():
+    """仅下载最新的缺失数据以补全现有数据。"""
+    print("开始更新最新数据...")
+    os.environ["PYTHONUTF8"] = "1"
+    # 设置代理 (如果需要)
+    os.environ["HTTP_PROXY"] = "http://127.0.0.1:7890"
+    os.environ["HTTPS_PROXY"] = "http://127.0.0.1:7890"
+
+    # 配置文件路径 (根据你的系统调整)
+    config_path = r"//192.168.123.62/share/user_data/config.json"
+    # config_path = "/mnt/知识中心/user_data/config.json" # Linux/macOS 示例
+
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"配置文件不存在: {config_path}")
+    else:
+        print(f"找到配置文件: {config_path}")
+
+    # 准备 Freqtrade 命令参数
+    # **关键：省略 --timerange 参数**
+    # 使用 --append 更符合更新最新数据的语义，但 Freqtrade 通常也能正确处理
+    sys.argv = [
+        "freqtrade",
+        "download-data",
+        "--config", config_path,
+        "--timeframes", "1m", "5m", "15m", "1h", "4h", "1d",
+        # "--append", # 可以考虑用 --append 替换 --prepend，语义更清晰
+    ]
+
+    print(f"执行命令: {' '.join(sys.argv)}")
+
+    # 执行下载
+    try:
+        main()
+        print("数据更新成功完成。")
+    except SystemExit as e:
+        # SystemExit(0) 是正常退出，非 0 通常表示错误
+        if e.code is not None and e.code != 0:
+            print(f"Freqtrade 异常退出，退出码: {e.code}。更新可能未完成。")
+        elif e.code == 0:
+            print("Freqtrade 正常退出 (code 0)。")
+        else:
+            print("Freqtrade 退出，但未提供明确的退出码。")
+    except Exception as e:
+        print(f"数据更新过程中发生错误: {str(e)}")
+
 
 if __name__ == "__main__":
-    run_collect()
+    # run_collect()
+    update_latest_data()
